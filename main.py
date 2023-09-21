@@ -1,3 +1,5 @@
+import math
+
 import cv2
 import pyocr
 import pyocr.builders
@@ -5,19 +7,20 @@ import numpy as np
 from PIL import Image
 from moviepy.editor import *
 import re
+from concurrent.futures import ProcessPoolExecutor
+import time
 
-# file_path = 'C:/Users/Gold/Videos/Session4_2.mp4'
-file_path = 'C:/Users/Gold/Videos/2023-09-19 23-59-16.mp4'
-delay = 1
-window_name = 'frame'
-thresh = 50
-# bgr = [50, 177, 208]  # yellow
-# bgr = [] #gray
-bgr = [250, 178, 91]  # blue
+file_path = 'C:/Users/Gold/Videos/2023-09-20 17-11-38.mp4'
+color_list = {
+    'blue': [250, 178, 91, 50],
+    'yellow': [50, 177, 208, 90],
+    'gray': [188, 189, 189, 70]
+}
 
-# 色の閾値
-minBGR = np.array([bgr[0] - thresh, bgr[1] - thresh, bgr[2] - thresh])
-maxBGR = np.array([bgr[0] + thresh, bgr[1] + thresh, bgr[2] + thresh])
+color = color_list['gray']
+
+minBGR = np.array([color[0] - color[3], color[1] - color[3], color[2] - color[3]])
+maxBGR = np.array([color[0] + color[3], color[1] + color[3], color[2] + color[3]])
 
 tesseract_path = 'C:/Program Files/Tesseract-OCR'
 if tesseract_path not in os.environ["PATH"].split(os.pathsep):
@@ -25,15 +28,7 @@ if tesseract_path not in os.environ["PATH"].split(os.pathsep):
 
 
 def get_text(frame):
-    """
-    画像を編集する部分
-    """
-
-    # BGRをRGBに変換←ここの部分グレースケールなど工夫することで精度に変化が出ます
     bgr2rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    """
-    OCRに投げるための処理
-    """
     # ocrに渡せるpillowの形に変換
     to_PIL = Image.fromarray(bgr2rgb)
     # ocrのツールの読込
@@ -44,39 +39,77 @@ def get_text(frame):
     text = tool.image_to_string(
         to_PIL,
         lang=lang,
-        builder=pyocr.builders.TextBuilder(tesseract_layout=6),
-
+        builder=pyocr.builders.TextBuilder(tesseract_layout=7)
     )
     return text
 
 
-# while文の場合
-cap = cv2.VideoCapture(file_path)
+def split_movie():
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        sys.exit()
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    start_millis1 = math.ceil(total_frames / 4)
+    start_millis2 = math.ceil(total_frames / 4 * 2)
+    start_millis3 = math.ceil(total_frames / 4 * 3)
+    print(f'Total time:{total_frames / fps}')
+    return start_millis1, start_millis2, start_millis3, total_frames
 
-if not cap.isOpened():
-    sys.exit()
-idx = 0
-while cap.isOpened():
-    idx += 1
-    ret, frame = cap.read()
-    if ret:
-        if idx < cap.get(cv2.CAP_PROP_FPS):
-            continue
+
+def analyze(start, stop):
+    frame_index = start
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        sys.exit(-1)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    idx = 0
+    flag = True
+    while frame_index <= stop:
+        frame_index += 1
+        idx += 1
+        ret, frame = cap.read()
+        if ret:
+            if idx < cap.get(cv2.CAP_PROP_FPS):
+                continue
+            else:
+                resized_frame = frame[70:90, 30:1570]
+                if not flag:
+                    cv2.imshow('check', resized_frame)
+                    if cv2.waitKey() & 0xFF == ord('q'):
+                        cv2.destroyWindow('check')
+                        break
+                    else:
+                        flag = True
+                maskBGR = cv2.inRange(resized_frame, minBGR, maxBGR)
+                text = get_text(maskBGR)
+                print(text)
+                text = re.sub('[sx]a[nm][il!]', 'xaml', text)
+                text = re.sub('[ce]s.?', 'cs', text)
+                text = re.sub('[a-zA-Z](?!\\.)xamlcs', '.xaml.cs', text)
+                text = re.sub('[a-zA-Z]\\.xamlcs', '.xaml.cs', text)
+                text = re.sub('[a-zA-Z](?!\\.)xaml', '.xaml', text)
+                text = re.sub('[Ww]?indo[wW]?', 'Window', text)
+                text = re.sub('[a-zA-Z]cs[a-zA-Z]', '', text)
+                result = re.findall('[a-zA-Z]+.xaml.cs|[a-zA-Z]+.cs|[a-zA-Z]+.xaml', text)
+                second = int(cap.get(cv2.CAP_PROP_POS_FRAMES) / idx)
+                filled_second = str(second).zfill(4)
+                result.append(filled_second)
+                cv2.imwrite("{}_{}.{}".format('C:/Users/Gold/Videos/tmp/image', filled_second, '.jpg'),
+                            maskBGR)
+                # print(text)
+                print('\033[32m' + str(result) + '\033[0m')
+                idx = 0
         else:
-            resized_frame = frame[100:150, 20:1570]
-            maskBGR = cv2.inRange(resized_frame, minBGR, maxBGR)
-            text = get_text(maskBGR)
-            text = re.sub('[sx]a[nm][il!]', 'xaml', text)
-            text = re.sub('[ce]s.?', 'cs', text)
-            text = re.sub('[a-zA-Z](?!\\.)xamlcs', '.xaml.cs', text)
-            text = re.sub('[a-zA-Z](?!\\.)xaml', '.xaml', text)
-            result = re.findall('[a-zA-Z]+.xaml.cs|[a-zA-Z]+.cs|[a-zA-Z]+.xaml', text)
-            second = int(cap.get(cv2.CAP_PROP_POS_FRAMES) / idx)
-            filled_second = str(second).zfill(4)
-            result.append(filled_second)
-            cv2.imwrite("{}_{}.{}".format('C:/Users/Gold/Videos/tmp/image', filled_second, '.jpg'),
-                        resized_frame)
-            print(result)
-            idx = 0
-    else:
-        break
+            break
+
+
+if __name__ == '__main__':
+    t = time.time()
+    start1, start2, start3, total_frames = split_movie()
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        executor.submit(analyze, 0, start1)
+        executor.submit(analyze, start1, start2)
+        executor.submit(analyze, start2, start3)
+        executor.submit(analyze, start3, total_frames)
+    print(f'Time elapsed:{time.time() - t}')
